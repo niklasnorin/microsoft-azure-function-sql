@@ -18,30 +18,37 @@ public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceW
 
 
     // Section B: Create the SQL query based on event type
-    string text;
+    string eventQuery;
+    string latestEventQuery;
     string[] parameterNames;
     string[] parameterValues;
 
     switch (eventType) 
     {
         case "temperature":
-            text = "INSERT INTO Temperature_events (event_id, device_id, timestamp, temperature) " +
+            eventQuery = "INSERT INTO temperature_events (event_id, device_id, timestamp, temperature) " +
                     "VALUES (@event_id, @device_id, @time, @temp);";
+            latestEventQuery = "INSERT INTO temperature_events_latest (device_id, timestamp, temperature) " +
+                    "VALUES(@device_id, @time, @temp) ON DUPLICATE KEY UPDATE timestamp=@time, temp=@temp";
             float temperature = body.@event.data.temperature.value;
             parameterNames = new string[] {"@event_id", "@device_id", "@time", "@temp"};
             parameterValues = new string[] {eventId, deviceId, timestamp, temperature.ToString()};
             break;
             
         case "touch":
-            text = "INSERT INTO Touch_events (event_id, device_id, timestamp) " +
+            eventQuery = "INSERT INTO touch_events (event_id, device_id, timestamp) " +
                     "VALUES (@event_id, @device_id, @time);";
+            latestEventQuery = "INSERT INTO touch_events_latest (device_id, timestamp) " +
+                    "VALUES(@device_id, @time) ON DUPLICATE KEY UPDATE timestamp=@time";
             parameterNames = new string[] {"@event_id", "@device_id", "@time"};
             parameterValues = new string[] {eventId, deviceId, timestamp};
             break;
 
         case "objectPresent":
-            text = "INSERT INTO Prox_events (event_id, device_id, timestamp, state) " +
+            eventQuery = "INSERT INTO prox_events (event_id, device_id, timestamp, state) " +
                     "VALUES (@event_id, @device_id, @time, @state);";
+            latestEventQuery = "INSERT INTO prox_events_latest (device_id, timestamp, state) " +
+                    "VALUES(@device_id, @time, @state) ON DUPLICATE KEY UPDATE timestamp=@time, state=@state";
             string state = body.@event.data.objectPresent.state;
             parameterNames = new string[] {"@event_id", "@device_id", "@time", "@state"};
             parameterValues = new string[] {eventId, deviceId, timestamp, state};
@@ -60,7 +67,30 @@ public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceW
     using (SqlConnection conn = new SqlConnection(str))
     {
         conn.Open();
-        using (SqlCommand cmd = new SqlCommand(text, conn))
+        using (SqlCommand cmd = new SqlCommand(eventQuery, conn))
+        {
+            // Add the parameters
+            for (int i = 0; i < parameterValues.Length; i++)
+            {
+                cmd.Parameters.AddWithValue(parameterNames[i], parameterValues[i]);
+            }
+
+            try
+            {
+                // Execute query
+                var rows = await cmd.ExecuteNonQueryAsync();
+            }
+            catch (SqlException ex) when (ex.Number == 2627)
+            {
+                // Ignore duplicate events...
+            }
+            catch (SqlException ex)
+            {
+                // but propagate other errors so that the Data Connector can retry later.
+                return req.CreateResponse(HttpStatusCode.InternalServerError);
+            }
+        }
+        using (SqlCommand cmd = new SqlCommand(latestEventQuery, conn))
         {
             // Add the parameters
             for (int i = 0; i < parameterValues.Length; i++)
