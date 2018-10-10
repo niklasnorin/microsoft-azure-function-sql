@@ -6,6 +6,51 @@ using System.Configuration;
 using System.Data.SqlClient;
 using System.Threading.Tasks;
 
+public const string insertTemperatureEventQuery = @"
+INSERT INTO temperature_events (event_id, device_id, timestamp, temperature)
+VALUES (@event_id, @device_id, @timestamp, @temperature);
+";
+
+public const string insertTouchEventQuery = @"
+INSERT INTO touch_events (event_id, device_id, timestamp)
+VALUES (@event_id, @device_id, @timestamp);
+";
+
+public const string insertProximityEventQuery = @"
+INSERT INTO prox_events (event_id, device_id, timestamp, state)
+VALUES (@event_id, @device_id, @timestamp, @state);
+";
+
+public const string upsertLatestTemperatureQuery = @"
+IF NOT EXISTS (SELECT * FROM temperature_events_latest WHERE device_id = @device_id)
+    INSERT INTO temperature_events_latest (device_id, timestamp, temperature)
+    VALUES (@device_id, @timestamp, @temperature)
+ELSE
+    UPDATE temperature_events_latest
+    SET timestamp = @timestamp, temperature = @temperature
+    WHERE device_id = @device_id;
+";
+
+public const string upsertLatestTouchQuery = @"
+IF NOT EXISTS (SELECT * FROM touch_events_latest WHERE device_id = @device_id)
+    INSERT INTO touch_events_latest (device_id, timestamp)
+    VALUES (@device_id, @timestamp)
+ELSE
+    UPDATE touch_events_latest
+    SET timestamp = @timestamp
+    WHERE device_id = @device_id;
+";
+
+public const string upsertLatestProximityQuery = @"
+IF NOT EXISTS (SELECT * FROM prox_events_latest WHERE device_id = @device_id)
+    INSERT INTO prox_events_latest (device_id, timestamp, state)
+    VALUES (@device_id, @timestamp, @state)
+ELSE
+    UPDATE prox_events_latest
+    SET timestamp = @timestamp, state = @state
+    WHERE device_id = @device_id;
+";
+
 public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceWriter log)
 {
     // Section A: Get event data
@@ -18,39 +63,33 @@ public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceW
 
 
     // Section B: Create the SQL query based on event type
-    string eventQuery;
-    string latestEventQuery;
+    string insertEventQuery;
+    string upsertLatestEventQuery;
     string[] parameterNames;
     string[] parameterValues;
 
     switch (eventType) 
     {
         case "temperature":
-            eventQuery = "INSERT INTO temperature_events (event_id, device_id, timestamp, temperature) " +
-                    "VALUES (@event_id, @device_id, @time, @temp);";
-            latestEventQuery = "INSERT INTO temperature_events_latest (device_id, timestamp, temperature) " +
-                    "VALUES(@device_id, @time, @temp) ON DUPLICATE KEY UPDATE timestamp=@time, temp=@temp";
+            insertEventQuery = insertTemperatureEventQuery;
+            upsertLatestEventQuery = upsertLatestTemperatureQuery;
             float temperature = body.@event.data.temperature.value;
-            parameterNames = new string[] {"@event_id", "@device_id", "@time", "@temp"};
+            parameterNames = new string[] {"@event_id", "@device_id", "@timestamp", "@temperature"};
             parameterValues = new string[] {eventId, deviceId, timestamp, temperature.ToString()};
             break;
             
         case "touch":
-            eventQuery = "INSERT INTO touch_events (event_id, device_id, timestamp) " +
-                    "VALUES (@event_id, @device_id, @time);";
-            latestEventQuery = "INSERT INTO touch_events_latest (device_id, timestamp) " +
-                    "VALUES(@device_id, @time) ON DUPLICATE KEY UPDATE timestamp=@time";
-            parameterNames = new string[] {"@event_id", "@device_id", "@time"};
+            insertEventQuery = insertTouchEventQuery;
+            upsertLatestEventQuery = upsertLatestTouchQuery;
+            parameterNames = new string[] {"@event_id", "@device_id", "@timestamp"};
             parameterValues = new string[] {eventId, deviceId, timestamp};
             break;
 
         case "objectPresent":
-            eventQuery = "INSERT INTO prox_events (event_id, device_id, timestamp, state) " +
-                    "VALUES (@event_id, @device_id, @time, @state);";
-            latestEventQuery = "INSERT INTO prox_events_latest (device_id, timestamp, state) " +
-                    "VALUES(@device_id, @time, @state) ON DUPLICATE KEY UPDATE timestamp=@time, state=@state";
+            insertEventQuery = insertProximityEventQuery;
+            upsertLatestEventQuery = upsertLatestProximityQuery;
             string state = body.@event.data.objectPresent.state;
-            parameterNames = new string[] {"@event_id", "@device_id", "@time", "@state"};
+            parameterNames = new string[] {"@event_id", "@device_id", "@timestamp", "@state"};
             parameterValues = new string[] {eventId, deviceId, timestamp, state};
             break;
 
@@ -67,7 +106,7 @@ public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceW
     using (SqlConnection conn = new SqlConnection(str))
     {
         conn.Open();
-        using (SqlCommand cmd = new SqlCommand(eventQuery, conn))
+        using (SqlCommand cmd = new SqlCommand(insertEventQuery, conn))
         {
             // Add the parameters
             for (int i = 0; i < parameterValues.Length; i++)
@@ -90,7 +129,7 @@ public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceW
                 return req.CreateResponse(HttpStatusCode.InternalServerError);
             }
         }
-        using (SqlCommand cmd = new SqlCommand(latestEventQuery, conn))
+        using (SqlCommand cmd = new SqlCommand(upsertLatestEventQuery, conn))
         {
             // Add the parameters
             for (int i = 0; i < parameterValues.Length; i++)
